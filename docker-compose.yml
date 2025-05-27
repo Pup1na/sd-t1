@@ -1,16 +1,17 @@
 version: "3.8"
 
 services:
-  mongodb:
-    image: mongo:6.0
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: diego
-      MONGO_INITDB_ROOT_PASSWORD: diego
-    volumes:
-      - ./mongo_data:/data/db   # Los archivos de DB viven en ./mongo_data
+  services:
+    elasticsearch:
+      image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+      environment:
+        - discovery.type=single-node
+      ports:
+        - "9200:9200"
+        - "9300:9300"
+      volumes:
+        - esdata:/usr/share/elasticsearch/data
+
 
   redis:
     image: redis:7.0
@@ -49,5 +50,5 @@ services:
     command: ["python", "traffic_generator.py"]
 
 volumes:
-  mongo_data:
+  esdata:
 
