@@ -1,54 +1,142 @@
-version: "3.8"
+version: '3.8'
 
 services:
-  services:
-    elasticsearch:
-      image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
-      environment:
-        - discovery.type=single-node
-      ports:
-        - "9200:9200"
-        - "9300:9300"
-      volumes:
-        - esdata:/usr/share/elasticsearch/data
-
-
-  redis:
-    image: redis:7.0
-    #container_name: redis_container
-    #restart: unless-stopped
-    #command: ["redis-server", "--maxmemory", "20mb", "--maxmemory-policy", "allkeys-lru"]
-    command: ["redis-server", "--maxmemory", "20mb", "--maxmemory-policy", "volatile-random"]
+  # Base de datos PostgreSQL
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: yahoo_answers
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
     ports:
-      - "6379:6379"
-      
-  scraper:
-    build: .
-    depends_on:
-      - mongodb
-    environment:
-      MONGO_URI: "mongodb+srv://diego:diego@waze.5jx8mup.mongodb.net/?retryWrites=true&w=majority&appName=Waze"
-    command: ["python", "scraper.py"]
+      - "5432:5432"
     volumes:
-      - .:/app
-    working_dir: /app
+      - postgres_data:/var/lib/postgresql/data
+      - ./services/storage/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - yahoo_network
 
-  trafficgen:
-    build: .
-    depends_on:
-      - mongodb
-      - redis
+  # Redis para cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - yahoo_network
+
+  # Servicio de carga inicial de datos
+  data_loader:
+    build: ./services/data_loader
     environment:
-      MONGO_URI: "mongodb+srv://diego:diego@waze.5jx8mup.mongodb.net/?retryWrites=true&w=majority&appName=Waze"
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      TRAFFIC_EVENTS: 5000
-      TRAFFIC_SAMPLE_SIZE: 20
-      TRAFFIC_BASE_TTL: 60
-      TRAFFIC_RATE: 2.0
-      TRAFFIC_QUERIES: 100
-    command: ["python", "traffic_generator.py"]
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=yahoo_answers
+      - DB_USER=admin
+      - DB_PASSWORD=password
+      - DATA_PATH=/app/data
+      - PYTHONUNBUFFERED=1  # Para mostrar logs en tiempo real
+    depends_on:
+      - postgres
+    volumes:
+      - ./data:/app/data
+    networks:
+      - yahoo_network
+    profiles:
+      - tools
+
+  # Servicio de almacenamiento
+  storage:
+    build: ./services/storage
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=yahoo_answers
+      - DB_USER=admin
+      - DB_PASSWORD=password
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - postgres
+    ports:
+      - "8001:8000"
+    networks:
+      - yahoo_network
+
+  # Servicio de cache
+  cache:
+    build: ./services/cache
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STORAGE_URL=http://storage:8000
+      - LLM_URL=http://llm:8000
+      - CACHE_TTL=300
+      - MAX_CACHE_SIZE=50
+      - CACHE_POLICY=lru
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - redis
+      - storage
+    ports:
+      - "8002:8000"
+    networks:
+      - yahoo_network
+
+  # Servicio de score/calidad
+  score:
+    build: ./services/score_service
+    environment:
+      - STORAGE_URL=http://storage:8000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - storage
+    ports:
+      - "8003:8000"
+    networks:
+      - yahoo_network
+
+  # Servicio LLM
+  llm:
+    build: ./services/llm_service
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SCORE_URL=http://score:8000
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - score
+    ports:
+      - "8004:8000"
+    networks:
+      - yahoo_network
+
+  # Generador de tráfico
+  traffic_generator:
+    build: ./services/traffic_generator
+    environment:
+      - CACHE_URL=http://cache:8000
+      - STORAGE_URL=http://storage:8000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=yahoo_answers
+      - DB_USER=admin
+      - DB_PASSWORD=password
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - cache
+      - llm
+      - postgres
+    ports:
+      - "8005:8000"
+    networks:
+      - yahoo_network
 
 volumes:
-  esdata:
+  postgres_data:
+  redis_data:
 
+networks:
+  yahoo_network:
+    driver: bridge
